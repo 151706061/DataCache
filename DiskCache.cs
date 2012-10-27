@@ -54,10 +54,17 @@ namespace DataCache
         void Log(CacheLogLevel level, string message);
     }
 
+    public interface IDiskCache
+    {
+        bool Enabled { get; }
+        PixelCacheItem Get(string topLevelId, string cacheId);
+        PutResponse Put(string topLevelId, string cacheId, PixelCacheItem pixelCacheItem);
+        bool IsCached(string topLevelId, string cacheId);
+    }
 
 
 
-    public class DiskCache : IDataCache
+    public class DiskCache : IDiskCache
     {
         private static string _rootFolder;
 
@@ -71,7 +78,7 @@ namespace DataCache
 
         private readonly IDiskCacheLogger _diskCacheLogger;
 
-        public bool IsDiskCacheEnabled { get; private set; }
+        public bool Enabled { get; private set; }
 
 
         public DiskCache(IDiskCacheLogger logger)
@@ -125,7 +132,7 @@ namespace DataCache
                 _pixelLock = new NamedReaderWriterLockSlim<string>();
                 _cacheStatusRepo = new Dictionary<string, bool>();
                 _cacheStatusRepoLock = new ReaderWriterLockSlim();
-                IsDiskCacheEnabled = true;
+                Enabled = true;
             }
             catch (Exception e)
             {
@@ -154,9 +161,9 @@ namespace DataCache
             UpdateStatus(action);
         }
 
-        public bool IsCachedToDisk(string topLevelId, string cacheId)
+        public bool IsCached(string topLevelId, string cacheId)
         {
-            if (!IsDiskCacheEnabled || topLevelId == null || cacheId == null)
+            if (!Enabled || topLevelId == null || cacheId == null)
                 return false;
             try
             {
@@ -201,7 +208,7 @@ namespace DataCache
         }
         public PixelCacheItem Get(string topLevelId, string cacheId)
         {
-            if (!IsDiskCacheEnabled || topLevelId == null)
+            if (!Enabled || topLevelId == null)
                 return null;
             PixelCacheItem item;
             var st = new Stopwatch();
@@ -255,7 +262,7 @@ namespace DataCache
 
         public PutResponse Put(string topLevelId, string cacheId, PixelCacheItem pixelCacheItem)
         {
-            if (!IsDiskCacheEnabled)
+            if (!Enabled)
                 return PutResponse.Disabled;
 
             if (pixelCacheItem == null ||
@@ -322,14 +329,10 @@ namespace DataCache
             return compressed ? cacheFolder + ".cp" : cacheFolder + ".p";
         }
 
-
-
         private static DynamicBuffer GetScratch()
         {
             return Scratch ?? (Scratch = new DynamicBuffer());
         }
-
-
 
         private void UpdateStatus(Action action)
         {

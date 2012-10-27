@@ -25,6 +25,9 @@ namespace DataCache
 
         public void Resize(int incomingDataSize, bool isCompressed)
         {
+            if (incomingDataSize < 0)
+                return;
+
             if (!isCompressed)
             {
                 if (Buffer == null || Buffer.Length != incomingDataSize)

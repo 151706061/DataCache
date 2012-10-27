@@ -28,6 +28,7 @@ namespace DataCache
         T this[string key] { get; }
         void Add(string key, T item);
         bool Contains(string key);
+        bool Remove(string key);
         T PopOldestWithSameSize(int incomingSize);
     }
 
@@ -259,6 +260,24 @@ namespace DataCache
                     Size -= item.Size;
                     return true;
                 }
+                return false;
+            }
+        }
+
+        public bool Remove(string key)
+        {
+            lock (_lock)
+            {
+                 T item;
+                 if (_keyToValue.TryGetValue(key, out item))
+                 {
+                    List.Remove(_index[item]);
+                    _index.Remove(item);
+                    _valueToKey.Remove(item);
+                    _keyToValue.Remove(key);
+                    Size -= item.Size;
+                    return true;                    
+                 }
                 return false;
             }
         }
