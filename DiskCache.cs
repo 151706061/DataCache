@@ -1,4 +1,4 @@
-﻿﻿#region License
+﻿#region License
 
 //Copyright (C)  2012 Aaron Boxer
 
@@ -25,12 +25,12 @@ using System.Threading;
 
 namespace DataCache
 {
-
     public class PixelCacheItem : IMemoryCacheItem
     {
         public bool IsCompressed;
         public byte[] PixelData;
         public int Size { get; set; }
+        public Stream PixelStream { get; set; }
     }
 
     public enum PutResponse
@@ -49,10 +49,6 @@ namespace DataCache
         Error
     }
 
-    public interface IDiskCacheLogger
-    {
-        void Log(CacheLogLevel level, string message);
-    }
 
     public interface IDiskCache
     {
@@ -61,7 +57,6 @@ namespace DataCache
         PutResponse Put(string topLevelId, string cacheId, PixelCacheItem pixelCacheItem);
         bool IsCached(string topLevelId, string cacheId);
     }
-
 
 
     public class DiskCache : IDiskCache
@@ -76,24 +71,24 @@ namespace DataCache
 
         [ThreadStatic] public static DynamicBuffer Scratch;
 
-        private readonly IDiskCacheLogger _diskCacheLogger;
+        private readonly ICacheLogger _cacheLogger;
 
         public bool Enabled { get; private set; }
 
 
-        public DiskCache(IDiskCacheLogger logger)
-            : this(CacheSettings.Default.DiskCacheRootFolder,logger)
+        public DiskCache(ICacheLogger logger)
+            : this(CacheSettings.Default.DiskCacheRootFolder, logger)
         {
         }
 
-        internal DiskCache(String rootFolder, IDiskCacheLogger logger)
+        internal DiskCache(String rootFolder, ICacheLogger logger)
         {
             if (!CacheSettings.Default.DiskCacheEnabled)
                 return;
 
             if (rootFolder == null)
                 return;
-            _diskCacheLogger = logger;
+            _cacheLogger = logger;
             _rootFolder = rootFolder;
             var tokens = _rootFolder.Split(':');
             string drive = null;
@@ -101,7 +96,8 @@ namespace DataCache
                 drive = tokens[0];
             if (drive == null)
             {
-                Log(CacheLogLevel.Error, String.Format("Root folder {0} does not begin with a drive letter. Cache disabled", rootFolder));
+                Log(CacheLogLevel.Error,
+                    String.Format("Root folder {0} does not begin with a drive letter. Cache disabled", rootFolder));
                 return;
             }
 
@@ -136,11 +132,11 @@ namespace DataCache
             }
             catch (Exception e)
             {
-               Log(CacheLogLevel.Error, String.Format("Exception while creating root folder: {0}. Cache is disabled", e));
+                Log(CacheLogLevel.Error,
+                    String.Format("Exception while creating root folder: {0}. Cache is disabled", e));
             }
         }
 
- 
 
         public void ClearIsCached(string cacheId)
         {
@@ -152,12 +148,12 @@ namespace DataCache
         private void SetIsCached(string cacheItemId, bool isCached)
         {
             Action action = () =>
-                             {
-                                if (_cacheStatusRepo.ContainsKey(cacheItemId))
-                                    _cacheStatusRepo[cacheItemId] = isCached;
-                                else
-                                    _cacheStatusRepo.Add(cacheItemId, isCached);
-                             };
+                                {
+                                    if (_cacheStatusRepo.ContainsKey(cacheItemId))
+                                        _cacheStatusRepo[cacheItemId] = isCached;
+                                    else
+                                        _cacheStatusRepo.Add(cacheItemId, isCached);
+                                };
             UpdateStatus(action);
         }
 
@@ -187,13 +183,14 @@ namespace DataCache
             }
             catch (Exception e)
             {
-               Log(CacheLogLevel.Debug, String.Format("Exception checking if frame is cached for study {0} :{1}", topLevelId, e));
+                Log(CacheLogLevel.Debug,
+                    String.Format("Exception checking if frame is cached for study {0} :{1}", topLevelId, e));
             }
             SetIsCached(cacheId, isCached);
             return isCached;
         }
 
-        private string VerifyDataPath(string topLevelId, string cacheId,out bool isCompressed)
+        private string VerifyDataPath(string topLevelId, string cacheId, out bool isCompressed)
         {
             isCompressed = false;
             var path = GetPixelPath(topLevelId, cacheId, true);
@@ -206,6 +203,7 @@ namespace DataCache
             path = GetPixelPath(topLevelId, cacheId, false);
             return File.Exists(path) ? path : null;
         }
+
         public PixelCacheItem Get(string topLevelId, string cacheId)
         {
             if (!Enabled || topLevelId == null)
@@ -218,7 +216,7 @@ namespace DataCache
                 using (_pixelLock.LockRead(cacheId))
                 {
                     bool isCompressed;
-                    var pixelPath = VerifyDataPath(topLevelId, cacheId,out isCompressed);
+                    var pixelPath = VerifyDataPath(topLevelId, cacheId, out isCompressed);
                     if (pixelPath == null)
                     {
                         ClearIsCached(cacheId);
@@ -226,34 +224,47 @@ namespace DataCache
                     }
 
                     item = new PixelCacheItem {IsCompressed = isCompressed};
-                    using (var fs = File.OpenRead(pixelPath))
+                    FileStream fs = null;
+                    try
                     {
-                        GetScratch().Resize((int) fs.Length, item.IsCompressed);
+                           fs = new FileStream(pixelPath, FileMode.Open, FileAccess.Read, FileShare.Read, 0x10100, FileOptions.SequentialScan);
+                            GetScratch().Resize((int)fs.Length, item.IsCompressed);
 
-                        int count;
-                        int offset = 0;
-                        var length = (int) fs.Length;
-                        int blockSize = Math.Min(MaxBlockSize, length - offset);
-                        while (offset < length && (count = fs.Read(GetScratch().Buffer, offset, blockSize)) > 0)
-                        {
-                            offset += count;
-                            blockSize = Math.Min(MaxBlockSize, length - offset);
-                        }
+                            int count;
+                            int offset = 0;
+                            var length = (int)fs.Length;
+                            int blockSize = Math.Min(MaxBlockSize, length);
+                            while ( (count = fs.Read(GetScratch().Buffer, offset, blockSize)) > 0)
+                            {
+                                offset += count;
+                                blockSize = Math.Min(MaxBlockSize, length - offset);
+                            }
 
 
-                        item.Size = (int) fs.Length;
-                        item.PixelData = GetScratch().Buffer;
+                            item.Size = (int)fs.Length;
+                            item.PixelData = GetScratch().Buffer;
+                        
                     }
+                   finally
+                    {
+                        if (fs != null)
+                            fs.Close();
+                    }
+
+   
+
+                   
                     st.Stop();
                     var ms = (st.ElapsedTicks/(Stopwatch.Frequency/(1000.0*1000)))/1000.0;
                     Log(CacheLogLevel.Debug,
-                      String.Format("Get:  time elapsed: {1} ms for cache id '{0}',  ",
-                        cacheId, ms));
+                        String.Format("Get:  time elapsed: {1} ms for cache id '{0}',  ",
+                                      cacheId, ms));
                 }
             }
             catch (Exception e)
             {
-                Log(CacheLogLevel.Debug, String.Format("Get: Exception getting frame for series {0}: {1}", topLevelId, e));
+                Log(CacheLogLevel.Debug,
+                    String.Format("Get: Exception getting frame for series {0}: {1}", topLevelId, e));
                 ClearIsCached(cacheId);
                 item = null;
             }
@@ -265,9 +276,10 @@ namespace DataCache
             if (!Enabled)
                 return PutResponse.Disabled;
 
-            if (pixelCacheItem == null ||
-                pixelCacheItem.PixelData == null ||
-                topLevelId == null)
+            if (pixelCacheItem == null || topLevelId == null)
+                return PutResponse.InvalidData;
+
+            if (pixelCacheItem.PixelData == null && pixelCacheItem.PixelStream == null)
                 return PutResponse.InvalidData;
 
             var rc = PutResponse.Error;
@@ -276,43 +288,62 @@ namespace DataCache
                 using (_pixelLock.LockWrite(cacheId))
                 {
                     Directory.CreateDirectory(GetTopLevelFolder(topLevelId));
-                    if (pixelCacheItem.PixelData != null)
+                    using (
+                        var fs =
+                            new FileStream(
+                                GetPixelPath(topLevelId, cacheId, pixelCacheItem.IsCompressed),
+                                FileMode.CreateNew,
+                                FileAccess.Write))
                     {
-                        using (
-                            var fs =
-                                new FileStream(
-                                    GetPixelPath(topLevelId, cacheId, pixelCacheItem.IsCompressed),
-                                    FileMode.CreateNew,
-                                    FileAccess.Write))
+                        fs.SetLength(pixelCacheItem.Size);
+                        if (pixelCacheItem.PixelData != null)
                         {
-                            int offset = 0;
-                            var length = pixelCacheItem.PixelData.Length;
-                            int blockSize = Math.Min(MaxBlockSize, length - offset);
-                            while (offset < length )
-                            {
-                                fs.Write(pixelCacheItem.PixelData, offset, blockSize);
-                                offset += blockSize;
-                                blockSize = Math.Min(MaxBlockSize, length - offset);
-                            }
+                            Write(pixelCacheItem.PixelData, fs);
                         }
-                        rc = PutResponse.Success;
-                        SetIsCached(cacheId, true);
+                        else if (pixelCacheItem.PixelStream != null)
+                        {
+                            Write(pixelCacheItem.PixelStream, fs);
+                        }
                     }
+                    rc = PutResponse.Success;
+                    SetIsCached(cacheId, true);
                 }
             }
             catch (Exception e)
             {
-                Log(CacheLogLevel.Debug, String.Format("Put: Exception putting frame for series {0}: {1}", topLevelId, e));
+                Log(CacheLogLevel.Debug,
+                    String.Format("Put: Exception putting frame for series {0}: {1}", topLevelId, e));
             }
             return rc;
         }
 
+        private void Write(byte[] src, Stream dest)
+        {
+            int offset = 0;
+            var length = src.Length;
+            int blockSize = Math.Min(MaxBlockSize, length);
+            while (offset < length)
+            {
+                dest.Write(src, offset, blockSize);
+                offset += blockSize;
+                blockSize = Math.Min(MaxBlockSize, length - offset);
+            }
+        }
+        private void Write(Stream src, Stream dest)
+        {
+            int count;
+            var scratch = new byte[MaxBlockSize];
+            while ( (count = src.Read(scratch, 0, MaxBlockSize)) > 0)
+            {
+                dest.Write(scratch, 0, count);
+            }
+        }
         private void Log(CacheLogLevel level, string message)
         {
-            if (_diskCacheLogger != null)
-                _diskCacheLogger.Log(level, "[DiskCache] :" + message);
+            if (_cacheLogger != null)
+                _cacheLogger.Log(level, "[DiskCache] :" + message);
         }
-  
+
 
         private static string GetTopLevelFolder(string topLevelId)
         {

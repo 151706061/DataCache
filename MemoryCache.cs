@@ -33,7 +33,7 @@ namespace DataCache
     }
 
 
-    public class MemoryCache<T> : IMemoryCache<T> where T : IMemoryCacheItem 
+    public class MemoryCache<T> : IMemoryCache<T> where T : class, IMemoryCacheItem 
     {
         private const long _defaultCapacity = 100000;
 
@@ -61,28 +61,24 @@ namespace DataCache
         // Add, Clear, CopyTo, and Remove lock on this object to keep them threadsafe.
         private readonly object _lock = new object();
 
-        #region Cache Members
+        private readonly ICacheLogger _logger;
 
-        /// <summary>
-        /// Initializes a new instance of the cache class that is empty and has the default
-        /// capacity.
-        /// </summary>
-        public MemoryCache() : this(_defaultCapacity)
-        {
-        }
+        #region Cache Members
 
         /// <summary>
         /// Initializes a new instance of the cache class that is empty and has the specified
         /// initial capacity.
         /// </summary>
         /// <param name="capacityInMb"></param>
-        public MemoryCache(long capacityInMb)
+        /// <param name="logger"> </param>
+        public MemoryCache(long capacityInMb, ICacheLogger logger)
         {
             if (capacityInMb < 0)
             {
                 throw new InvalidOperationException("Capacity must be positive.");
             }
             Capacity = capacityInMb * 1048576;
+            _logger = logger;
         }
 
         public T this[string key]
@@ -147,6 +143,9 @@ namespace DataCache
         /// it does so.</remarks>
         public void Add(string key, T item)
         {
+            if (item == null)
+                return;
+
             lock (_lock)
             {
                 //if already in cache, then just move to "front" of list
@@ -191,20 +190,12 @@ namespace DataCache
             
         }
 
-        /// <summary>
-        /// Determines whether the cache contains a specific value.
-        /// </summary>
-        /// <param name="item">The item to locate in the cache.</param>
-        /// <returns>true if the item is in the cache, otherwise false.</returns>
-        public bool Contains(T item)
-        {
-            return _index.ContainsKey(item);
-        }
-
-
         public bool Contains(string key)
         {
-            return _keyToValue.ContainsKey(key);
+            lock (_lock)
+            {
+                return _keyToValue.ContainsKey(key);
+            }
         }
 
 
@@ -246,7 +237,7 @@ namespace DataCache
         /// <returns>true if the item was successfully removed from the cache,
         /// otherwise false.  This method also returns false if the item was not
         /// found in the cache.</returns>
-        public bool Remove(T item)
+        private bool Remove(T item)
         {
             lock (_lock)
             {
@@ -283,6 +274,12 @@ namespace DataCache
         }
 
         #endregion
+
+        private void Log(CacheLogLevel level, string message)
+        {
+            if (_logger != null)
+                _logger.Log(level, "[MemoryCache] :" + message);
+        }
 
     }
 }
