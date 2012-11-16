@@ -44,9 +44,18 @@ namespace DataCache {
         [global::System.Configuration.ApplicationScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("200")]
-        public long MemoryCacheCapacityInMb {
+        public long PixelMemoryCacheCapacityInMb {
             get {
-                return ((long)(this["MemoryCacheCapacityInMb"]));
+                return ((long)(this["PixelMemoryCacheCapacityInMb"]));
+            }
+        }
+        
+        [global::System.Configuration.ApplicationScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("5")]
+        public long StringMemoryCacheCapacityInMb {
+            get {
+                return ((long)(this["StringMemoryCacheCapacityInMb"]));
             }
         }
     }

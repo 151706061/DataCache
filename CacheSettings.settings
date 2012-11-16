@@ -8,8 +8,11 @@
     <Setting Name="DiskCacheRootFolder" Type="System.String" Scope="Application">
       <Value Profile="(Default)">c:\diskcache</Value>
     </Setting>
-    <Setting Name="MemoryCacheCapacityInMb" Type="System.Int64" Scope="Application">
+    <Setting Name="PixelMemoryCacheCapacityInMb" Type="System.Int64" Scope="Application">
       <Value Profile="(Default)">200</Value>
+    </Setting>
+    <Setting Name="StringMemoryCacheCapacityInMb" Type="System.Int64" Scope="Application">
+      <Value Profile="(Default)">5</Value>
     </Setting>
   </Settings>
 </SettingsFile>

@@ -21,16 +21,27 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Threading;
 
 namespace DataCache
 {
-    public class PixelCacheItem : IMemoryCacheItem
+    public class StringCacheItem : IMemoryCacheItem
+    {
+        public string Data { get; set; }
+
+        public int Size
+        {
+            get { return Data.Length; }
+        }
+    }
+
+    public class ByteBufferCacheItem : IMemoryCacheItem
     {
         public bool IsCompressed;
-        public byte[] PixelData;
+        public byte[] Data;
         public int Size { get; set; }
-        public Stream PixelStream { get; set; }
+        public Stream ByteStream { get; set; }
     }
 
     public enum PutResponse
@@ -53,9 +64,10 @@ namespace DataCache
     public interface IDiskCache
     {
         bool Enabled { get; }
-        PixelCacheItem Get(string topLevelId, string cacheId);
-        PutResponse Put(string topLevelId, string cacheId, PixelCacheItem pixelCacheItem);
-        bool IsCached(string topLevelId, string cacheId);
+        ByteBufferCacheItem Get(CacheType cacheType, string topLevelId, string cacheId);
+        PutResponse Put(string topLevelId, string cacheId, ByteBufferCacheItem byteBufferCacheItem);
+        PutResponse Put(string topLevelId, string cacheId, StringCacheItem pixelCacheItem);
+        bool IsCached(CacheType type, string topLevelId, string cacheId);
     }
 
 
@@ -63,7 +75,7 @@ namespace DataCache
     {
         private static string _rootFolder;
 
-        private readonly NamedReaderWriterLockSlim<string> _pixelLock;
+        private readonly NamedReaderWriterLockSlim<string> _cacheLock;
         private readonly IDictionary<string, bool> _cacheStatusRepo;
         private readonly ReaderWriterLockSlim _cacheStatusRepoLock;
 
@@ -125,7 +137,7 @@ namespace DataCache
                     Directory.CreateDirectory(_rootFolder);
                 }
 
-                _pixelLock = new NamedReaderWriterLockSlim<string>();
+                _cacheLock = new NamedReaderWriterLockSlim<string>();
                 _cacheStatusRepo = new Dictionary<string, bool>();
                 _cacheStatusRepoLock = new ReaderWriterLockSlim();
                 Enabled = true;
@@ -157,7 +169,38 @@ namespace DataCache
             UpdateStatus(action);
         }
 
-        public bool IsCached(string topLevelId, string cacheId)
+
+        public PutResponse Put(string topLevelId, string cacheId, StringCacheItem pixelCacheItem)
+        {
+            if (!Enabled)
+                return PutResponse.Disabled;
+
+            if (topLevelId == null)
+                return PutResponse.InvalidData;
+
+            if (pixelCacheItem == null || (pixelCacheItem.Data == null))
+                return PutResponse.InvalidData;
+
+            var rc = PutResponse.Error;
+            try
+            {
+                using (_cacheLock.LockWrite(cacheId))
+                {
+                    Directory.CreateDirectory(GetTopLevelFolder(topLevelId));
+                    Write(GetStringPath(topLevelId, cacheId), pixelCacheItem.Data);
+                    rc = PutResponse.Success;
+                    SetIsCached(cacheId, true);
+                }
+            }
+            catch (Exception e)
+            {
+                Log(CacheLogLevel.Debug,
+                    String.Format("Put: Exception putting string for series {0}: {1}", cacheId, e));
+            }
+            return rc;
+        }
+
+        public bool IsCached(CacheType type, string topLevelId, string cacheId)
         {
             if (!Enabled || topLevelId == null || cacheId == null)
                 return false;
@@ -175,16 +218,16 @@ namespace DataCache
             var isCached = false;
             try
             {
-                using (_pixelLock.LockRead(cacheId))
+                using (_cacheLock.LockRead(cacheId))
                 {
                     bool isCompressed;
-                    isCached = VerifyDataPath(topLevelId, cacheId, out isCompressed) != null;
+                    isCached = GetVerifiedPath(type, topLevelId, cacheId, out isCompressed) != null;
                 }
             }
             catch (Exception e)
             {
                 Log(CacheLogLevel.Debug,
-                    String.Format("Exception checking if frame is cached for study {0} :{1}", topLevelId, e));
+                    String.Format("Exception checking if data is cached for cache id {0} :{1}", cacheId, e));
             }
             SetIsCached(cacheId, isCached);
             return isCached;
@@ -199,61 +242,66 @@ namespace DataCache
                 isCompressed = true;
                 return path;
             }
-
             path = GetPixelPath(topLevelId, cacheId, false);
             return File.Exists(path) ? path : null;
         }
 
-        public PixelCacheItem Get(string topLevelId, string cacheId)
+        public ByteBufferCacheItem Get(CacheType cacheType, string topLevelId, string cacheId)
         {
             if (!Enabled || topLevelId == null)
                 return null;
-            PixelCacheItem item;
+            ByteBufferCacheItem item;
             var st = new Stopwatch();
             st.Start();
             try
             {
-                using (_pixelLock.LockRead(cacheId))
+                using (_cacheLock.LockRead(cacheId))
                 {
                     bool isCompressed;
-                    var pixelPath = VerifyDataPath(topLevelId, cacheId, out isCompressed);
-                    if (pixelPath == null)
+                    var path = GetVerifiedPath(cacheType, topLevelId, cacheId, out isCompressed);
+                    if (path == null)
                     {
                         ClearIsCached(cacheId);
                         return null;
                     }
-
-                    item = new PixelCacheItem {IsCompressed = isCompressed};
+                    item = new ByteBufferCacheItem {IsCompressed = isCompressed};
                     FileStream fs = null;
                     try
                     {
-                           fs = new FileStream(pixelPath, FileMode.Open, FileAccess.Read, FileShare.Read, 0x10100, FileOptions.SequentialScan);
-                            GetScratch().Resize((int)fs.Length, item.IsCompressed);
+                        fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 0x10100,
+                                            FileOptions.SequentialScan);
+                        byte[] readBuffer = null;
 
-                            int count;
-                            int offset = 0;
-                            var length = (int)fs.Length;
-                            int blockSize = Math.Min(MaxBlockSize, length);
-                            while ( (count = fs.Read(GetScratch().Buffer, offset, blockSize)) > 0)
-                            {
-                                offset += count;
-                                blockSize = Math.Min(MaxBlockSize, length - offset);
-                            }
+                        switch (cacheType)
+                        {
+                            case CacheType.Pixels:
+                                GetScratch().Resize((int) fs.Length, item.IsCompressed);
+                                readBuffer = GetScratch().Buffer;
+                                break;
+                            case CacheType.String:
+                                readBuffer = new byte[fs.Length];
+                                break;
+                        }
+                        if (readBuffer == null)
+                            return item;
 
-
-                            item.Size = (int)fs.Length;
-                            item.PixelData = GetScratch().Buffer;
-                        
+                        int count;
+                        var offset = 0;
+                        var length = (int) fs.Length;
+                        var blockSize = Math.Min(MaxBlockSize, length);
+                        while ((count = fs.Read(readBuffer, offset, blockSize)) > 0)
+                        {
+                            offset += count;
+                            blockSize = Math.Min(MaxBlockSize, length - offset);
+                        }
+                        item.Size = (int) fs.Length;
+                        item.Data = readBuffer;
                     }
-                   finally
+                    finally
                     {
                         if (fs != null)
                             fs.Close();
                     }
-
-   
-
-                   
                     st.Stop();
                     var ms = (st.ElapsedTicks/(Stopwatch.Frequency/(1000.0*1000)))/1000.0;
                     Log(CacheLogLevel.Debug,
@@ -264,45 +312,46 @@ namespace DataCache
             catch (Exception e)
             {
                 Log(CacheLogLevel.Debug,
-                    String.Format("Get: Exception getting frame for series {0}: {1}", topLevelId, e));
+                    String.Format("Get: Exception getting data for cache id {0}: {1}", cacheId, e));
                 ClearIsCached(cacheId);
                 item = null;
             }
             return item;
         }
 
-        public PutResponse Put(string topLevelId, string cacheId, PixelCacheItem pixelCacheItem)
+        public PutResponse Put(string topLevelId, string cacheId, ByteBufferCacheItem byteBufferCacheItem)
         {
             if (!Enabled)
                 return PutResponse.Disabled;
 
-            if (pixelCacheItem == null || topLevelId == null)
+            if (topLevelId == null)
                 return PutResponse.InvalidData;
 
-            if (pixelCacheItem.PixelData == null && pixelCacheItem.PixelStream == null)
+            if (byteBufferCacheItem == null ||
+                (byteBufferCacheItem.Data == null && byteBufferCacheItem.ByteStream == null))
                 return PutResponse.InvalidData;
 
             var rc = PutResponse.Error;
             try
             {
-                using (_pixelLock.LockWrite(cacheId))
+                using (_cacheLock.LockWrite(cacheId))
                 {
                     Directory.CreateDirectory(GetTopLevelFolder(topLevelId));
                     using (
                         var fs =
                             new FileStream(
-                                GetPixelPath(topLevelId, cacheId, pixelCacheItem.IsCompressed),
+                                GetPixelPath(topLevelId, cacheId, byteBufferCacheItem.IsCompressed),
                                 FileMode.CreateNew,
                                 FileAccess.Write))
                     {
-                        fs.SetLength(pixelCacheItem.Size);
-                        if (pixelCacheItem.PixelData != null)
+                        fs.SetLength(byteBufferCacheItem.Size);
+                        if (byteBufferCacheItem.Data != null)
                         {
-                            Write(pixelCacheItem.PixelData, fs);
+                            Write(byteBufferCacheItem.Data, fs);
                         }
-                        else if (pixelCacheItem.PixelStream != null)
+                        else if (byteBufferCacheItem.ByteStream != null)
                         {
-                            Write(pixelCacheItem.PixelStream, fs);
+                            Write(byteBufferCacheItem.ByteStream, fs);
                         }
                     }
                     rc = PutResponse.Success;
@@ -312,7 +361,7 @@ namespace DataCache
             catch (Exception e)
             {
                 Log(CacheLogLevel.Debug,
-                    String.Format("Put: Exception putting frame for series {0}: {1}", topLevelId, e));
+                    String.Format("Put: Exception putting data for cache id {0}: {1}", cacheId, e));
             }
             return rc;
         }
@@ -329,15 +378,17 @@ namespace DataCache
                 blockSize = Math.Min(MaxBlockSize, length - offset);
             }
         }
+
         private void Write(Stream src, Stream dest)
         {
             int count;
             var scratch = new byte[MaxBlockSize];
-            while ( (count = src.Read(scratch, 0, MaxBlockSize)) > 0)
+            while ((count = src.Read(scratch, 0, MaxBlockSize)) > 0)
             {
                 dest.Write(scratch, 0, count);
             }
         }
+
         private void Log(CacheLogLevel level, string message)
         {
             if (_cacheLogger != null)
@@ -353,11 +404,35 @@ namespace DataCache
             return rc;
         }
 
+        private string GetVerifiedPath(CacheType cacheType, string topLevelId, string cacheId, out bool compressed)
+        {
+            compressed = false;
+            switch (cacheType)
+            {
+                case CacheType.Pixels:
+                    var path = GetPixelPath(topLevelId, cacheId, true);
+                    if (File.Exists(path))
+                    {
+                        compressed = true;
+                        return path;
+                    }
+                    path = GetPixelPath(topLevelId, cacheId, false);
+                    return File.Exists(path) ? path : null;
+                case CacheType.String:
+                    return GetStringPath(topLevelId, cacheId);
+            }
+            return null;
+        }
 
         private static string GetPixelPath(string topLevelId, string cacheId, bool compressed)
         {
             var cacheFolder = GetTopLevelFolder(topLevelId) + "\\" + cacheId;
             return compressed ? cacheFolder + ".cp" : cacheFolder + ".p";
+        }
+
+        private static string GetStringPath(string topLevelId, string cacheId)
+        {
+            return GetTopLevelFolder(topLevelId) + "\\" + cacheId + ".s";
         }
 
         private static DynamicBuffer GetScratch()
@@ -377,5 +452,34 @@ namespace DataCache
                 _cacheStatusRepoLock.ExitWriteLock();
             }
         }
+
+        private static void Write(string filename, string data)
+        {
+            using (var fileStream = new FileStream(filename, FileMode.CreateNew, FileAccess.Write))
+            {
+                using (var compressionStream = new GZipStream(fileStream, CompressionMode.Compress))
+                {
+                    using (var writer = new StreamWriter(compressionStream))
+                    {
+                        writer.Write(data);
+                    }
+                }
+            }
+        }
+
+        /*
+        static string DecompressFromFile(string filename)
+        {
+            using (var fileStream = new FileStream(filename, FileMode.Open, FileAccess.Read))
+            {
+                using (var compressionStream = new GZipStream(fileStream, CompressionMode.Decompress))
+                {
+                    using (var reader = new StreamReader(compressionStream))
+                    {
+                        return reader.ReadToEnd();
+                    }
+                }
+            }
+        }*/
     }
 }
