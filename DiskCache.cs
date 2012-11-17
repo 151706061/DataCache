@@ -66,17 +66,25 @@ namespace DataCache
         bool Enabled { get; }
         ByteBufferCacheItem Get(CacheType cacheType, string topLevelId, string cacheId);
         PutResponse Put(string topLevelId, string cacheId, ByteBufferCacheItem byteBufferCacheItem);
-        PutResponse Put(string topLevelId, string cacheId, StringCacheItem pixelCacheItem);
+        PutResponse Put(string topLevelId, string cacheId, StringCacheItem stringCacheItem);
         bool IsCached(CacheType type, string topLevelId, string cacheId);
     }
 
+ 
 
     public class DiskCache : IDiskCache
     {
+        private class CacheStatus
+        {
+            public bool IsCached {  get; set; }
+            public bool IsCompressed {  get; set; }
+            public string Path { get;set; }
+        }
+
         private static string _rootFolder;
 
         private readonly NamedReaderWriterLockSlim<string> _cacheLock;
-        private readonly IDictionary<string, bool> _cacheStatusRepo;
+        private readonly IDictionary<string, CacheStatus> _cacheStatusRepo;
         private readonly ReaderWriterLockSlim _cacheStatusRepoLock;
 
         private const int MaxBlockSize = 4096;
@@ -138,7 +146,7 @@ namespace DataCache
                 }
 
                 _cacheLock = new NamedReaderWriterLockSlim<string>();
-                _cacheStatusRepo = new Dictionary<string, bool>();
+                _cacheStatusRepo = new Dictionary<string, CacheStatus>();
                 _cacheStatusRepoLock = new ReaderWriterLockSlim();
                 Enabled = true;
             }
@@ -157,20 +165,20 @@ namespace DataCache
         }
 
 
-        private void SetIsCached(string cacheItemId, bool isCached)
+        private void SetIsCached(string cacheItemId, CacheStatus status)
         {
             Action action = () =>
                                 {
                                     if (_cacheStatusRepo.ContainsKey(cacheItemId))
-                                        _cacheStatusRepo[cacheItemId] = isCached;
+                                        _cacheStatusRepo[cacheItemId] = status;
                                     else
-                                        _cacheStatusRepo.Add(cacheItemId, isCached);
+                                        _cacheStatusRepo.Add(cacheItemId, status);
                                 };
             UpdateStatus(action);
         }
 
 
-        public PutResponse Put(string topLevelId, string cacheId, StringCacheItem pixelCacheItem)
+        public PutResponse Put(string topLevelId, string cacheId, StringCacheItem stringCacheItem)
         {
             if (!Enabled)
                 return PutResponse.Disabled;
@@ -178,7 +186,7 @@ namespace DataCache
             if (topLevelId == null)
                 return PutResponse.InvalidData;
 
-            if (pixelCacheItem == null || (pixelCacheItem.Data == null))
+            if (stringCacheItem == null || (stringCacheItem.Data == null))
                 return PutResponse.InvalidData;
 
             var rc = PutResponse.Error;
@@ -187,9 +195,10 @@ namespace DataCache
                 using (_cacheLock.LockWrite(cacheId))
                 {
                     Directory.CreateDirectory(GetTopLevelFolder(topLevelId));
-                    Write(GetStringPath(topLevelId, cacheId), pixelCacheItem.Data);
+                    var path = GetStringPath(topLevelId, cacheId);
+                    Write(path, stringCacheItem.Data);
                     rc = PutResponse.Success;
-                    SetIsCached(cacheId, true);
+                    SetIsCached(cacheId, new CacheStatus{IsCached = true, Path = path});
                 }
             }
             catch (Exception e)
@@ -202,8 +211,13 @@ namespace DataCache
 
         public bool IsCached(CacheType type, string topLevelId, string cacheId)
         {
+            return GetCacheStatus(type, topLevelId, cacheId).IsCached;
+        }
+
+        private CacheStatus GetCacheStatus(CacheType type, string topLevelId, string cacheId)
+        {
             if (!Enabled || topLevelId == null || cacheId == null)
-                return false;
+                return new CacheStatus();
             try
             {
                 _cacheStatusRepoLock.EnterReadLock();
@@ -215,13 +229,15 @@ namespace DataCache
                 _cacheStatusRepoLock.ExitReadLock();
             }
 
-            var isCached = false;
+            var status = new CacheStatus();
             try
             {
                 using (_cacheLock.LockRead(cacheId))
                 {
                     bool isCompressed;
-                    isCached = GetVerifiedPath(type, topLevelId, cacheId, out isCompressed) != null;
+                    var path = GetVerifiedPath(type, topLevelId, cacheId, out isCompressed);
+                    status = new CacheStatus{IsCached = path != null, IsCompressed = isCompressed, Path = path};
+                    SetIsCached(cacheId, status);
                 }
             }
             catch (Exception e)
@@ -229,23 +245,9 @@ namespace DataCache
                 Log(CacheLogLevel.Debug,
                     String.Format("Exception checking if data is cached for cache id {0} :{1}", cacheId, e));
             }
-            SetIsCached(cacheId, isCached);
-            return isCached;
+            
+            return status;
         }
-
-        private string VerifyDataPath(string topLevelId, string cacheId, out bool isCompressed)
-        {
-            isCompressed = false;
-            var path = GetPixelPath(topLevelId, cacheId, true);
-            if (File.Exists(path))
-            {
-                isCompressed = true;
-                return path;
-            }
-            path = GetPixelPath(topLevelId, cacheId, false);
-            return File.Exists(path) ? path : null;
-        }
-
         public ByteBufferCacheItem Get(CacheType cacheType, string topLevelId, string cacheId)
         {
             if (!Enabled || topLevelId == null)
@@ -255,16 +257,14 @@ namespace DataCache
             st.Start();
             try
             {
+                var status = GetCacheStatus(cacheType, topLevelId, cacheId);
+                if (!status.IsCached)
+                    return null;
+                var path = GetPath(cacheType, topLevelId, cacheId, status.IsCompressed);
                 using (_cacheLock.LockRead(cacheId))
                 {
-                    bool isCompressed;
-                    var path = GetVerifiedPath(cacheType, topLevelId, cacheId, out isCompressed);
-                    if (path == null)
-                    {
-                        ClearIsCached(cacheId);
-                        return null;
-                    }
-                    item = new ByteBufferCacheItem {IsCompressed = isCompressed};
+                  
+                    item = new ByteBufferCacheItem {IsCompressed = status.IsCompressed};
                     FileStream fs = null;
                     try
                     {
@@ -355,7 +355,7 @@ namespace DataCache
                         }
                     }
                     rc = PutResponse.Success;
-                    SetIsCached(cacheId, true);
+                    SetIsCached(cacheId, new CacheStatus{IsCached = true,IsCompressed = byteBufferCacheItem.IsCompressed});
                 }
             }
             catch (Exception e)
@@ -419,11 +419,22 @@ namespace DataCache
                     path = GetPixelPath(topLevelId, cacheId, false);
                     return File.Exists(path) ? path : null;
                 case CacheType.String:
+                    path =  GetStringPath(topLevelId, cacheId);
+                    return File.Exists(path) ? path : null;
+            }
+            return null;
+        }
+        private string GetPath(CacheType cacheType, string topLevelId, string cacheId, bool compressed)
+        {
+            switch (cacheType)
+            {
+                case CacheType.Pixels:
+                    return GetPixelPath(topLevelId, cacheId, compressed);
+                case CacheType.String:
                     return GetStringPath(topLevelId, cacheId);
             }
             return null;
         }
-
         private static string GetPixelPath(string topLevelId, string cacheId, bool compressed)
         {
             var cacheFolder = GetTopLevelFolder(topLevelId) + "\\" + cacheId;
@@ -467,19 +478,5 @@ namespace DataCache
             }
         }
 
-        /*
-        static string DecompressFromFile(string filename)
-        {
-            using (var fileStream = new FileStream(filename, FileMode.Open, FileAccess.Read))
-            {
-                using (var compressionStream = new GZipStream(fileStream, CompressionMode.Decompress))
-                {
-                    using (var reader = new StreamReader(compressionStream))
-                    {
-                        return reader.ReadToEnd();
-                    }
-                }
-            }
-        }*/
     }
 }
