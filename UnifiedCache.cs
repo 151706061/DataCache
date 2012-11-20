@@ -50,6 +50,7 @@ namespace DataCache
         ByteBufferCacheItem Get(string cacheId);
         PutResponse Put(string topLevelId, string cacheId, StringCacheItem stringCacheItem);
         bool IsCachedToDisk(CacheType type, string topLevelId, string cacheId);
+        void ClearCachedToDisk(string cacheId);
         void ClearFromMemory(string cacheId);
     }
 
@@ -156,6 +157,11 @@ namespace DataCache
         public bool IsCachedToDisk(CacheType type, string topLevelId, string cacheId)
         {
             return _diskCache.IsCached(type, topLevelId, cacheId);
+        }
+
+        public void ClearCachedToDisk(string cacheId)
+        {
+            _diskCache.ClearIsCached(cacheId);
         }
 
         public void ClearFromMemory(string cacheId)

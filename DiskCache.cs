@@ -68,6 +68,7 @@ namespace DataCache
         PutResponse Put(string topLevelId, string cacheId, ByteBufferCacheItem byteBufferCacheItem);
         PutResponse Put(string topLevelId, string cacheId, StringCacheItem stringCacheItem);
         bool IsCached(CacheType type, string topLevelId, string cacheId);
+        void ClearIsCached(string cacheId);
     }
 
  
@@ -157,11 +158,14 @@ namespace DataCache
             }
         }
 
-
+        /// <summary>
+        /// Set IsCached flag to false. The data may still be stored on disk; we simply overwrite the next
+        /// time the item is cached
+        /// </summary>
+        /// <param name="cacheId"></param>
         public void ClearIsCached(string cacheId)
         {
-            Action action = () => _cacheStatusRepo.Remove(cacheId);
-            UpdateStatus(action);
+           SetIsCached(cacheId, new CacheStatus());
         }
 
 
@@ -466,7 +470,7 @@ namespace DataCache
 
         private static void Write(string filename, string data)
         {
-            using (var fileStream = new FileStream(filename, FileMode.CreateNew, FileAccess.Write))
+            using (var fileStream = new FileStream(filename, FileMode.Create, FileAccess.Write))
             {
                 using (var compressionStream = new GZipStream(fileStream, CompressionMode.Compress))
                 {
