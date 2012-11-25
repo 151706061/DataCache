@@ -50,8 +50,8 @@ namespace DataCache
         ByteBufferCacheItem Get(string cacheId);
         PutResponse Put(string topLevelId, string cacheId, StringCacheItem stringCacheItem);
         bool IsCachedToDisk(CacheType type, string topLevelId, string cacheId);
-        void ClearCachedToDisk(string cacheId);
         void ClearFromMemory(string cacheId);
+        IEnumerable<string> EnumerateCachedItems(string topLevelId);
     }
 
 
@@ -158,15 +158,14 @@ namespace DataCache
         {
             return _diskCache.IsCached(type, topLevelId, cacheId);
         }
-
-        public void ClearCachedToDisk(string cacheId)
-        {
-            _diskCache.ClearIsCached(cacheId);
-        }
-
         public void ClearFromMemory(string cacheId)
         {
             _memoryCaches[CacheType.Pixels].Remove(cacheId);
+        }
+
+        public IEnumerable<string> EnumerateCachedItems(string topLevelId)
+        {
+            return _diskCache.EnumerateCachedItems(topLevelId);
         }
 
         #endregion

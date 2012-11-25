@@ -69,6 +69,7 @@ namespace DataCache
         PutResponse Put(string topLevelId, string cacheId, StringCacheItem stringCacheItem);
         bool IsCached(CacheType type, string topLevelId, string cacheId);
         void ClearIsCached(string cacheId);
+        IEnumerable<string> EnumerateCachedItems(string topLevelId);
     }
 
  
@@ -168,6 +169,21 @@ namespace DataCache
            SetIsCached(cacheId, new CacheStatus());
         }
 
+        public IEnumerable<string> EnumerateCachedItems(string topLevelId)
+        {
+            try
+            {
+                return Directory.EnumerateFiles(GetTopLevelFolder(topLevelId));
+            }
+            catch (Exception e)
+            {
+               _cacheLogger.Log(CacheLogLevel.Error, e.Message);   
+               
+            }
+            return null;
+
+        }
+
 
         private void SetIsCached(string cacheItemId, CacheStatus status)
         {
@@ -187,7 +203,7 @@ namespace DataCache
             if (!Enabled)
                 return PutResponse.Disabled;
 
-            if (topLevelId == null)
+            if (cacheId == null)
                 return PutResponse.InvalidData;
 
             if (stringCacheItem == null || (stringCacheItem.Data == null))
@@ -220,7 +236,7 @@ namespace DataCache
 
         private CacheStatus GetCacheStatus(CacheType type, string topLevelId, string cacheId)
         {
-            if (!Enabled || topLevelId == null || cacheId == null)
+            if (!Enabled ||  cacheId == null)
                 return new CacheStatus();
             try
             {
@@ -254,7 +270,7 @@ namespace DataCache
         }
         public ByteBufferCacheItem Get(CacheType cacheType, string topLevelId, string cacheId)
         {
-            if (!Enabled || topLevelId == null)
+            if (!Enabled || cacheId == null)
                 return null;
             ByteBufferCacheItem item;
             var st = new Stopwatch();
@@ -328,7 +344,7 @@ namespace DataCache
             if (!Enabled)
                 return PutResponse.Disabled;
 
-            if (topLevelId == null)
+            if (cacheId == null)
                 return PutResponse.InvalidData;
 
             if (byteBufferCacheItem == null ||
